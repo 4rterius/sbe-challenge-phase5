@@ -63,7 +63,7 @@ func main() {
 		"num": len(records),
 	}).Infoln("parsed quantities")
 
-	// Connect to the database and open a transaction
+	// Connect to the database
 
 	db, err := sql.Open("mysql", fmt.Sprintf("%s:%s@tcp(localhost:3306)/%s", config.DbUser, config.DbPswd, config.DbName))
 	if err != nil {
@@ -78,17 +78,7 @@ func main() {
 
 	lgr.Infoln("connected and pinged database")
 
-	// Prepare statements
-
-	stmtUpdateProduct, err := db.Prepare(
-		fmt.Sprintf("UPDATE %sproduct SET quantity=? WHERE ean13=?", config.TablePrefix))
-	if err != nil {
-		lgr.WithFields(lg.Fields{
-			"err":  err,
-			"subj": "update_product",
-		}).Fatalln("failed to prepare statement")
-	}
-	defer stmtUpdateProduct.Close()
+	// Build ean13 -> id_stock_available map
 
 	stmtIDStockAvailable, err := db.Prepare(
 		fmt.Sprintf(
@@ -108,20 +98,8 @@ func main() {
 	}
 	defer stmtIDStockAvailable.Close()
 
-	stmtUpdateCombination, err := db.Prepare(
-		fmt.Sprintf("UPDATE %sstock_available SET quantity=? WHERE id_stock_available=?", config.TablePrefix))
-	if err != nil {
-		lgr.WithFields(lg.Fields{
-			"err":  err,
-			"subj": "update_combination",
-		}).Fatalln("failed to prepare statement")
-	}
-	defer stmtUpdateCombination.Close()
-
-	// Build ean13 -> id_stock_available map
-
-	var idStockAvailableMap map[string]int = make(map[string]int)
-	var idStockAvailable int = 0
+	idStockAvailableMap := make(map[string]int)
+	idStockAvailable := 0
 
 	for i, r := range records {
 		ean13 := r[0]
@@ -152,11 +130,63 @@ func main() {
 		rows.Close()
 	}
 
+	// Open the update transaction
+
+	loopSuccess := true
+
+	tx, err := db.Begin()
+	if err != nil {
+		lgr.WithFields((lg.Fields{"err": err})).Fatalln("failed to start a transaction")
+	}
+	defer func() {
+		if loopSuccess {
+			// Commit the update transaction if succeeded for each input record
+			if err := tx.Commit(); err != nil {
+				lgr.WithFields(lg.Fields{"err": err}).Error("failed to commit update transaction")
+			} else {
+				lgr.Info("commited update transaction")
+			}
+		} else {
+			// Roll it back if got an error at least once
+			if err := tx.Rollback(); err != nil {
+				lgr.WithFields(lg.Fields{"err": err}).Error("failed to roll back update transaction")
+			} else {
+				lgr.Warn("rolled back update transaction")
+			}
+		}
+	}()
+
+	lgr.Infoln("started an update transaction")
+
+	// Prepare update statements in the transaction
+
+	stmtUpdateProduct, err := tx.Prepare(
+		fmt.Sprintf("UPDATE %sproduct SET quantity=? WHERE ean13=?", config.TablePrefix))
+	if err != nil {
+		lgr.WithFields(lg.Fields{
+			"err":  err,
+			"subj": "update_product",
+		}).Fatalln("failed to prepare statement")
+	}
+	defer stmtUpdateProduct.Close()
+
+	stmtUpdateCombination, err := tx.Prepare(
+		fmt.Sprintf("UPDATE %sstock_available SET quantity=? WHERE id_stock_available=?", config.TablePrefix))
+	if err != nil {
+		lgr.WithFields(lg.Fields{
+			"err":  err,
+			"subj": "update_combination",
+		}).Fatalln("failed to prepare statement")
+	}
+	defer stmtUpdateCombination.Close()
+
 	// Run the main loop
 
 	for i, r := range records {
 		ean13, qnt := r[0], r[1]
 		rowsAffected := int64(0)
+
+		// qnt = "0"
 
 		lgr.WithFields(lg.Fields{
 			"ean13":    ean13,
@@ -171,6 +201,7 @@ func main() {
 				"err":    err,
 				"record": i,
 			}).Errorln("failed to update product")
+			loopSuccess = false
 		}
 
 		if rowc, err := res.RowsAffected(); err != nil {
@@ -179,6 +210,7 @@ func main() {
 				"record": i,
 				"stmt":   "update_product",
 			}).Errorln("failed to retrieve rows affected")
+			loopSuccess = false
 		} else {
 			rowsAffected += rowc
 		}
@@ -192,6 +224,7 @@ func main() {
 					"record":             i,
 					"id_stock_available": idStockAvailable,
 				}).Errorln("failed to update combination")
+				loopSuccess = false
 			}
 
 			if rowc, err := res.RowsAffected(); err != nil {
@@ -200,6 +233,7 @@ func main() {
 					"record": i,
 					"stmt":   "update_product",
 				}).Errorln("failed to retrieve rows affected")
+				loopSuccess = false
 			} else {
 				rowsAffected += rowc
 			}
