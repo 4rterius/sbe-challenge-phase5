@@ -3,7 +3,6 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"io"
 	"os"
 	"qntupdater/internal/qntupdater"
 
@@ -15,8 +14,7 @@ var lgr *lg.Logger = lg.New()
 
 func main() {
 	// Set up the logger
-
-	lgr.SetOutput(io.MultiWriter(os.Stdout))
+	lgr.SetOutput(os.Stdout)
 
 	// Parse cli arguments
 
