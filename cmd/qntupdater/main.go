@@ -212,12 +212,12 @@ func main() {
 			}).Errorln("failed to retrieve rows affected")
 			loopSuccess = false
 		} else {
-			rowsAffected += rowc
+			rowsAffected = rowc
 		}
 
 		// Try to update the combinations
 		if idStockAvailable, ok := idStockAvailableMap[ean13]; ok {
-			res, err := stmtUpdateCombination.Exec(qnt, idStockAvailable)
+			_, err := stmtUpdateCombination.Exec(qnt, idStockAvailable)
 			if err != nil {
 				lgr.WithFields(lg.Fields{
 					"err":                err,
@@ -226,31 +226,11 @@ func main() {
 				}).Errorln("failed to update combination")
 				loopSuccess = false
 			}
-
-			if rowc, err := res.RowsAffected(); err != nil {
-				lgr.WithFields(lg.Fields{
-					"err":    err,
-					"record": i,
-					"stmt":   "update_product",
-				}).Errorln("failed to retrieve rows affected")
-				loopSuccess = false
-			} else {
-				rowsAffected += rowc
-			}
-		} else {
+		} else if rowsAffected == 0 {
 			lgr.WithFields(lg.Fields{
 				"ean13":  ean13,
 				"record": i,
-			}).Infoln("ean13 not in the id_stock_available map")
-		}
-
-		// Warn if neither options succeeded
-		if rowsAffected < 1 {
-			lgr.WithFields(lg.Fields{
-				"ean13":  ean13,
-				"record": i,
-				"rows":   rowsAffected,
-			}).Warnln("neither product nor combination updated")
+			}).Infoln("product not affected and ean13 not in the id_stock_available map")
 		}
 	}
 }
