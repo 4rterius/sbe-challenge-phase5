@@ -3,59 +3,90 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql" // mysql driver
-	"log"
+	"io"
 	"os"
 	"qntupdater/internal/qntupdater"
+
+	_ "github.com/go-sql-driver/mysql" // mysql driver
+	lg "github.com/sirupsen/logrus"
 )
 
+var lgr *lg.Logger = lg.New()
+
 func main() {
+	// Set up the logger
+
+	lgr.SetOutput(io.MultiWriter(os.Stdout))
+
+	// Parse cli arguments
+
 	if len(os.Args) != 3 {
-		log.Fatalln("Incorrect number of arguments, usage:  qntupdater source.csv config.my")
+		lgr.WithFields(lg.Fields{
+			"got":      len(os.Args) - 1,
+			"expected": 2,
+		}).Fatalln("received incorrect number of arguments")
 	}
 
-	log.Printf("Script called to read data from '%s' using config at '%s'\n", os.Args[1], os.Args[2])
+	lgr.WithFields(lg.Fields{
+		"input_path":  os.Args[1],
+		"config_path": os.Args[2],
+	}).Infoln("started execution")
 
 	// Parse config
 
 	config := qntupdater.ScriptConfig{}
 	err := config.ReadFrom(os.Args[2])
 	if err != nil {
-		log.Fatalln(err)
+		lgr.WithFields(lg.Fields{
+			"err":  err,
+			"path": os.Args[2],
+		}).Fatalln("failed to read config")
 	}
 
-	log.Printf("Config parsed, connecting to '%s'@'localhost', prefix='%s' as '%s'\n", config.DbUser, config.TablePrefix, config.DbUser)
+	lgr.WithFields(lg.Fields{
+		"db_name":    config.DbName,
+		"db_user":    config.DbUser,
+		"tbl_prefix": config.TablePrefix,
+	}).Infoln("parsed config")
 
 	// Parse input values
 
 	records, err := qntupdater.GetQuantitiesFromFile(os.Args[1])
 	if err != nil {
-		log.Fatalln(err)
+		lgr.WithFields(lg.Fields{
+			"err":  err,
+			"path": os.Args[1],
+		}).Fatalln("failed to parse quantities")
 	}
 
-	log.Printf("Records parsed, %d in total\n", len(records))
+	lgr.WithFields(lg.Fields{
+		"num": len(records),
+	}).Infoln("parsed quantities")
 
 	// Connect to the database and open a transaction
 
 	db, err := sql.Open("mysql", fmt.Sprintf("%s:%s@tcp(localhost:3306)/%s", config.DbUser, config.DbPswd, config.DbName))
 	if err != nil {
-		log.Fatalln(err)
+		lgr.WithFields(lg.Fields{"err": err}).Fatalln("failed to open database")
 	}
 	defer db.Close()
 
 	err = db.Ping()
 	if err != nil {
-		log.Fatalln(err)
+		lgr.WithFields(lg.Fields{"err": err}).Fatalln("failed to ping database")
 	}
 
-	log.Println("Connected and pinged the database")
+	lgr.Infoln("connected and pinged database")
 
 	// Prepare statements
 
 	stmtUpdateProduct, err := db.Prepare(
 		fmt.Sprintf("UPDATE %sproduct SET quantity=? WHERE ean13=?", config.TablePrefix))
 	if err != nil {
-		log.Fatalln(err)
+		lgr.WithFields(lg.Fields{
+			"err":  err,
+			"subj": "update_product",
+		}).Fatalln("failed to prepare statement")
 	}
 	defer stmtUpdateProduct.Close()
 
@@ -70,14 +101,20 @@ func main() {
 			config.TablePrefix, config.TablePrefix, config.TablePrefix,
 			config.TablePrefix, config.TablePrefix, config.TablePrefix))
 	if err != nil {
-		log.Fatalln(err)
+		lgr.WithFields(lg.Fields{
+			"err":  err,
+			"subj": "id_stock_available",
+		}).Fatalln("failed to prepare statement")
 	}
 	defer stmtIDStockAvailable.Close()
 
 	stmtUpdateCombination, err := db.Prepare(
 		fmt.Sprintf("UPDATE %sstock_available SET quantity=? WHERE id_stock_available=?", config.TablePrefix))
 	if err != nil {
-		log.Fatalln(err)
+		lgr.WithFields(lg.Fields{
+			"err":  err,
+			"subj": "update_combination",
+		}).Fatalln("failed to prepare statement")
 	}
 	defer stmtUpdateCombination.Close()
 
@@ -91,14 +128,22 @@ func main() {
 
 		rows, err := stmtIDStockAvailable.Query(ean13)
 		if err != nil {
-			log.Printf("Failed to query 'id_stock_available'  record=%d err=%v\n", i, err)
-			break
+			lgr.WithFields(lg.Fields{
+				"err":    err,
+				"subj":   "id_stock_available",
+				"record": i,
+			}).Errorln("failed to query")
+			continue
 		}
 
 		if rows.Next() {
 			err := rows.Scan(&idStockAvailable)
 			if err != nil {
-				log.Printf("Failed to extract 'id_stock_available' from query result  record=%d err=%v\n", i, err)
+				lgr.WithFields(lg.Fields{
+					"err":    err,
+					"subj":   "id_stock_available",
+					"record": i,
+				}).Errorln("failed to extract the value from query result")
 			} else {
 				idStockAvailableMap[ean13] = idStockAvailable
 			}
@@ -111,22 +156,37 @@ func main() {
 
 	for i, r := range records {
 		ean13, qnt := r[0], r[1]
-		log.Printf("Processing record  idx=%d ean13=%s qnt=%s\n", i, ean13, qnt)
+
+		lgr.WithFields(lg.Fields{
+			"ean13":    ean13,
+			"quantity": qnt,
+			"record":   i,
+		}).Infoln("processing record")
 
 		// Try to update product
 		_, err := stmtUpdateProduct.Exec(qnt, ean13)
 		if err != nil {
-			log.Printf("Failed to update product  record=%d err=%v\n", i, err)
+			lgr.WithFields(lg.Fields{
+				"err":    err,
+				"record": i,
+			}).Errorln("failed to update product")
 		}
 
 		// Try to update the combinations
 		if idStockAvailable, ok := idStockAvailableMap[ean13]; ok {
 			_, err := stmtUpdateCombination.Exec(qnt, idStockAvailable)
 			if err != nil {
-				log.Printf("Failed to update combination  id_stock_available=%d record=%d err=%v\n", idStockAvailable, i, err)
+				lgr.WithFields(lg.Fields{
+					"err":                err,
+					"record":             i,
+					"id_stock_available": idStockAvailable,
+				}).Errorln("failed to update combination")
 			}
 		} else {
-			log.Printf("EAN13 not in the map  record=%d ean13=%v\n", i, ean13)
+			lgr.WithFields(lg.Fields{
+				"ean13":  ean13,
+				"record": i,
+			}).Logln(lg.WarnLevel, "ean13 not in the id_stock_available map")
 		}
 	}
 }
