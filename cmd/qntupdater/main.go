@@ -156,6 +156,7 @@ func main() {
 
 	for i, r := range records {
 		ean13, qnt := r[0], r[1]
+		rowsAffected := int64(0)
 
 		lgr.WithFields(lg.Fields{
 			"ean13":    ean13,
@@ -164,7 +165,7 @@ func main() {
 		}).Infoln("processing record")
 
 		// Try to update product
-		_, err := stmtUpdateProduct.Exec(qnt, ean13)
+		res, err := stmtUpdateProduct.Exec(qnt, ean13)
 		if err != nil {
 			lgr.WithFields(lg.Fields{
 				"err":    err,
@@ -172,9 +173,19 @@ func main() {
 			}).Errorln("failed to update product")
 		}
 
+		if rowc, err := res.RowsAffected(); err != nil {
+			lgr.WithFields(lg.Fields{
+				"err":    err,
+				"record": i,
+				"stmt":   "update_product",
+			}).Errorln("failed to retrieve rows affected")
+		} else {
+			rowsAffected += rowc
+		}
+
 		// Try to update the combinations
 		if idStockAvailable, ok := idStockAvailableMap[ean13]; ok {
-			_, err := stmtUpdateCombination.Exec(qnt, idStockAvailable)
+			res, err := stmtUpdateCombination.Exec(qnt, idStockAvailable)
 			if err != nil {
 				lgr.WithFields(lg.Fields{
 					"err":                err,
@@ -182,11 +193,30 @@ func main() {
 					"id_stock_available": idStockAvailable,
 				}).Errorln("failed to update combination")
 			}
+
+			if rowc, err := res.RowsAffected(); err != nil {
+				lgr.WithFields(lg.Fields{
+					"err":    err,
+					"record": i,
+					"stmt":   "update_product",
+				}).Errorln("failed to retrieve rows affected")
+			} else {
+				rowsAffected += rowc
+			}
 		} else {
 			lgr.WithFields(lg.Fields{
 				"ean13":  ean13,
 				"record": i,
-			}).Logln(lg.WarnLevel, "ean13 not in the id_stock_available map")
+			}).Infoln("ean13 not in the id_stock_available map")
+		}
+
+		// Warn if neither options succeeded
+		if rowsAffected < 1 {
+			lgr.WithFields(lg.Fields{
+				"ean13":  ean13,
+				"record": i,
+				"rows":   rowsAffected,
+			}).Warnln("neither product nor combination updated")
 		}
 	}
 }
