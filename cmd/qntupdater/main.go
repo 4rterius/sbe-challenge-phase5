@@ -81,6 +81,32 @@ func main() {
 	}
 	defer stmtUpdateCombination.Close()
 
+	// Build ean13 -> id_stock_available map
+
+	var idStockAvailableMap map[string]int = make(map[string]int)
+	var idStockAvailable int = 0
+
+	for i, r := range records {
+		ean13 := r[0]
+
+		rows, err := stmtIDStockAvailable.Query(ean13)
+		if err != nil {
+			log.Printf("Failed to query 'id_stock_available'  record=%d err=%v\n", i, err)
+			break
+		}
+
+		if rows.Next() {
+			err := rows.Scan(&idStockAvailable)
+			if err != nil {
+				log.Printf("Failed to extract 'id_stock_available' from query result  record=%d err=%v\n", i, err)
+			} else {
+				idStockAvailableMap[ean13] = idStockAvailable
+			}
+		}
+
+		rows.Close()
+	}
+
 	// Run the main loop
 
 	for i, r := range records {
@@ -93,31 +119,14 @@ func main() {
 			log.Printf("Failed to update product  record=%d err=%v\n", i, err)
 		}
 
-		// Get id_stock_available
-		rows, err := stmtIDStockAvailable.Query(ean13)
-		if err != nil {
-			log.Printf("Failed to query 'id_stock_available'  record=%d err=%v\n", i, err)
-			break
-		}
-
-		var idStockAvailable int = 0
-
-		if rows.Next() {
-			err := rows.Scan(&idStockAvailable)
+		// Try to update the combinations
+		if idStockAvailable, ok := idStockAvailableMap[ean13]; ok {
+			_, err := stmtUpdateCombination.Exec(qnt, idStockAvailable)
 			if err != nil {
-				log.Printf("Failed to extract 'id_stock_available' from query result  record=%d err=%v\n", i, err)
-			} else {
-				_, err := stmtUpdateCombination.Exec(qnt, idStockAvailable)
-				if err != nil {
-					log.Printf("Failed to update combination  id_stock_available=%d record=%d err=%v\n", idStockAvailable, i, err)
-				}
+				log.Printf("Failed to update combination  id_stock_available=%d record=%d err=%v\n", idStockAvailable, i, err)
 			}
+		} else {
+			log.Printf("EAN13 not in the map  record=%d ean13=%v\n", i, ean13)
 		}
-
-		if err = rows.Err(); err != nil {
-			log.Printf("Error at 'id_stock_available' query  record=%d err=%v\n", i, err)
-		}
-
-		rows.Close()
 	}
 }
