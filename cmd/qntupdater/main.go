@@ -100,37 +100,38 @@ func main() {
 	idStockAvailable := 0
 
 	for i, r := range records {
-		ean13 := r[0]
+		func() {
+			ean13 := r[0]
 
-		rows, err := stmtIDStockAvailable.Query(ean13)
-		if err != nil {
-			lgr.WithFields(lg.Fields{
-				"err":    err,
-				"subj":   "id_stock_available",
-				"record": i,
-			}).Errorln("failed to query")
-			continue
-		}
-
-		if rows.Next() {
-			err := rows.Scan(&idStockAvailable)
+			rows, err := stmtIDStockAvailable.Query(ean13)
 			if err != nil {
 				lgr.WithFields(lg.Fields{
 					"err":    err,
 					"subj":   "id_stock_available",
 					"record": i,
-				}).Errorln("failed to extract the value from query result")
-			} else {
-				idStockAvailableMap[ean13] = idStockAvailable
+				}).Errorln("failed to query")
+				return
 			}
-		}
+			defer rows.Close()
 
-		rows.Close()
+			if rows.Next() {
+				err := rows.Scan(&idStockAvailable)
+				if err != nil {
+					lgr.WithFields(lg.Fields{
+						"err":    err,
+						"subj":   "id_stock_available",
+						"record": i,
+					}).Errorln("failed to extract the value from query result")
+				} else {
+					idStockAvailableMap[ean13] = idStockAvailable
+				}
+			}
+		}()
 	}
 
 	// Open the update transaction
 
-	loopSuccess := true
+	loopSuccess := false
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -183,8 +184,6 @@ func main() {
 	for i, r := range records {
 		ean13, qnt := r[0], r[1]
 		rowsAffected := int64(0)
-
-		// qnt = "0"
 
 		lgr.WithFields(lg.Fields{
 			"ean13":    ean13,
