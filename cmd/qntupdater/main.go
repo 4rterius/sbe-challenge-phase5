@@ -131,7 +131,7 @@ func main() {
 
 	// Open the update transaction
 
-	loopSuccess := false
+	loopSuccess := true
 
 	tx, err := db.Begin()
 	if err != nil {
